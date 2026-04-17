@@ -6,157 +6,172 @@ import time
 # 設定頁面
 st.set_page_config(page_title="港鐵即時到站路線圖", layout="centered")
 
-# --- 1. 注入自定義 CSS：美化垂直線路排版 ---
+# --- 1. 自定義 CSS：打造垂直路線圖視覺 ---
 st.markdown("""
     <style>
-    /* 隱藏重整時的變灰效果 */
-    .stApp { opacity: 1 !important; }
-    
-    /* 垂直線路容器 */
-    .route-container {
-        padding-left: 40px;
-        border-left: 6px solid #888888; /* 預設灰線 */
+    .station-container {
+        display: flex;
+        align-items: center;
+        margin-bottom: 0px;
+        height: 50px;
+    }
+    .line-segment {
+        width: 6px;
+        height: 50px;
         margin-left: 20px;
+        background-color: #888; /* 預設顏色 */
         position: relative;
     }
-    
-    /* 路線特定顏色 (根據港鐵官方顏色) */
-    .line-AEL { border-left-color: #007078; }
-    .line-TCL { border-left-color: #F3A11F; }
-    .line-TML { border-left-color: #9A3820; }
-    .line-TKL { border-left-color: #A35EB5; }
-    .line-EAL { border-left-color: #53B7E8; }
-    .line-SIL { border-left-color: #B5BD00; }
-    .line-TWL { border-left-color: #E2231A; }
-    .line-ISL { border-left-color: #007AB7; }
-    .line-KTL { border-left-color: #00AF41; }
-    .line-DRL { border-left-color: #F58282; }
-
-    /* 車站圓點 */
-    .station-dot {
-        position: absolute;
-        left: -13px;
-        width: 20px;
-        height: 20px;
+    .station-node {
+        width: 16px;
+        height: 16px;
         background-color: white;
-        border: 4px solid #333;
+        border: 3px solid #888;
         border-radius: 50%;
-        z-index: 10;
+        position: absolute;
+        left: -5px;
+        top: 17px;
+        z-index: 2;
+    }
+    /* 點擊按鈕的樣式 */
+    div.stButton > button {
+        border: none;
+        background: transparent;
+        color: #31333F;
+        font-size: 18px;
+        font-weight: 500;
+        padding: 0px 20px;
+        text-align: left;
+        width: 100%;
+    }
+    div.stButton > button:hover {
+        color: #FF4B4B;
+        background: #F0F2F6;
+    }
+    /* 班次顯示盒 */
+    .eta-box {
+        background-color: #f8f9fa;
+        border-radius: 10px;
+        padding: 15px;
+        border-left: 5px solid #0078d4;
+        margin: 10px 0px 20px 40px;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 核心功能函數 ---
+# --- 2. 數據載入與 API 函式 ---
 @st.cache_data
 def load_mtr_csv():
-    # 讀取車站資料 [cite: 212]
-    url = "https://opendata.mtr.com.hk/data/mtr_lines_and_stations.csv"
-    df = pd.read_csv(url)
-    supported_lines = ["AEL", "TCL", "TML", "TKL", "EAL", "SIL", "TWL", "ISL", "KTL", "DRL"]
-    df = df[df["Line Code"].isin(supported_lines)]
-    # 只取單一方向來排列車站，避免重複 [cite: 212]
-    return df[df["Direction"] == "UP"].sort_values(by="Sequence")
+    # 讀取車站資料
+    df = pd.read_csv("mtr_lines_and_stations.csv")
+    return df
 
-def get_mtr_data(line, sta):
-    # 呼叫港鐵 API [cite: 22, 25]
-    url = f"https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php?line={line}&sta={sta}&lang=TC"
+def get_mtr_eta(line, sta):
+    """呼叫港鐵 API 獲取即時班次"""
+    url = f"https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php?line={line}&sta={sta}&lang=zh"
     try:
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            return resp.json()
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return response.json()
     except:
         return None
     return None
 
-def display_timetable(data, line, sta_code):
-    # 格式化顯示時刻表 
-    if not data or data.get("status") == 0:
-        st.warning(data.get("message", "暫無即時資訊") if data else "連線失敗")
-        return
-
-    schedule = data.get("data", {}).get(f"{line}-{sta_code}", {})
-    
-    # 檢查是否有延誤 [cite: 206]
-    if data.get("isdelay") == "Y":
-        st.error("⚠️ 列車服務延誤")
-
-    cols = st.columns(2)
-    for idx, direction in enumerate(["UP", "DOWN"]):
-        with cols[idx]:
-            dir_name = "往新界/博覽館" if direction == "UP" else "往市區/香港"
-            st.write(f"**{dir_label_mapping(line, direction)}**")
-            
-            trains = schedule.get(direction, [])
-            if not trains:
-                st.write(" 無班次")
-                continue
-                
-            for t in trains:
-                # 取得時間並過濾日期部分 [cite: 209]
-                time_val = t.get('time', '').split(" ")[1][:5]
-                # 東鐵線特殊標記 [cite: 209]
-                route_info = " (經馬場)" if t.get('route') == "RAC" else ""
-                st.caption(f"🏁 {t.get('dest')}{route_info} | 📍 月台 {t.get('plat')} | 🕒 {time_val}")
-
-def dir_label_mapping(line, direction):
-    # 根據路線提供更精確的方向描述 
-    mapping = {
-        "AEL": {"UP": "往博覽館", "DOWN": "往香港"},
-        "TCL": {"UP": "往東涌", "DOWN": "往香港"},
-        "EAL": {"UP": "往羅湖/落馬洲", "DOWN": "往金鐘"},
-        "TML": {"UP": "往烏溪沙", "DOWN": "往屯門"},
-        "TKL": {"UP": "往寶琳/康城", "DOWN": "往北角"},
-        "TWL": {"UP": "往荃灣", "DOWN": "往中環"},
-        "ISL": {"UP": "往柴灣", "DOWN": "往堅尼地城"},
-        "KTL": {"UP": "往調景嶺", "DOWN": "往黃埔"},
-        "SIL": {"UP": "往海怡半島", "DOWN": "往金鐘"},
-        "DRL": {"UP": "往迪士尼", "DOWN": "往欣澳"}
-    }
-    return mapping.get(line, {}).get(direction, direction)
-
-# --- 3. UI 介面設計 ---
+# --- 3. UI 介面設定 ---
 st.title("🚇 港鐵動態路線圖")
 
 stations_all = load_mtr_csv()
 line_map = {
-    "AEL": "機場快綫", "TCL": "東涌綫", "TML": "屯馬綫", "TKL": "將軍澳綫",
-    "EAL": "東鐵綫", "SIL": "南港島綫", "TWL": "荃灣綫", "ISL": "港島綫",
-    "KTL": "觀塘綫", "DRL": "迪士尼綫"
+    "KTL": {"name": "觀塘綫", "color": "#00AB4E"},
+    "ISL": {"name": "港島綫", "color": "#0077C8"},
+    "TWL": {"name": "荃灣綫", "color": "#E2231A"},
+    "SIL": {"name": "南港島綫", "color": "#B5BD00"},
+    "TKL": {"name": "將軍澳綫", "color": "#A35EB5"},
+    "EAL": {"name": "東鐵綫", "color": "#53B7E8"},
+    "TML": {"name": "屯馬綫", "color": "#9A3820"},
+    "TCL": {"name": "東涌綫", "color": "#F3A11F"},
+    "AEL": {"name": "機場快綫", "color": "#007078"},
+    "DRL": {"name": "迪士尼綫", "color": "#F5821F"}
 }
 
 with st.sidebar:
     st.header("⚙️ 選項")
-    sel_line = st.selectbox("切換線路", list(line_map.keys()), format_func=lambda x: f"{line_map[x]} ({x})")
+    sel_line_code = st.selectbox("切換線路", list(line_map.keys()), 
+                                format_func=lambda x: f"{line_map[x]['name']} ({x})")
+    
     st.write("---")
-    st.write("💡 點擊車站名稱查看即時班次")
-    auto_refresh = st.checkbox("自動更新數據", value=True)
+    st.info("💡 點擊車站名稱查看即時到站班次")
+    if st.button("🔄 手動更新數據"):
+        st.rerun()
 
-# 篩選所選路線的車站
-line_stations = stations_all[stations_all["Line Code"] == sel_line]
+# 篩選該路線車站（過濾掉重複的方向，僅取一組站序用於顯示）
+line_data = stations_all[stations_all["Line Code"] == sel_line_code].sort_values("Sequence")
+# 移除重複車站(因為 CSV 內可能有 UT/DT 兩組)
+line_stations = line_data.drop_duplicates(subset=["Station Code"])
 
 # --- 4. 渲染垂直路線圖 ---
-st.subheader(f"{line_map[sel_line]} 沿途各站")
+line_color = line_map[sel_line_code]['color']
+st.subheader(f"{line_map[sel_line_code]['name']} 沿途各站")
 st.caption(f"最後更新：{time.strftime('%H:%M:%S')}")
 
-# 套用路線顏色 CSS
-st.markdown(f'<div class="route-container line-{sel_line}">', unsafe_allow_html=True)
+# 使用 Session State 紀錄目前點選的車站
+if "selected_sta" not in st.session_state:
+    st.session_state.selected_sta = None
 
-# 使用局部更新，防止切換 Expanders 時閃爍
-@st.fragment(run_every=10 if auto_refresh else None)
-def render_route():
-    for _, row in line_stations.iterrows():
-        code = row["Station Code"]
-        name = row["Chinese Name"]
-        
-        # 繪製圓點
-        st.markdown('<div class="station-dot"></div>', unsafe_allow_html=True)
-        
-        # 車站點擊區塊 (Expander)
-        with st.expander(f"● {name} ({code})"):
-            with st.spinner('更新班次中...'):
-                api_data = get_mtr_data(sel_line, code)
-                display_timetable(api_data, sel_line, code)
+for index, row in line_stations.iterrows():
+    sta_code = row["Station Code"]
+    sta_name = row["Chinese Name"]
+    
+    # 建立垂直線段與節點
+    col_line, col_name = st.columns([0.1, 0.9])
+    
+    with col_line:
+        # 動態產生該線路顏色的 HTML
+        st.markdown(f"""
+            <div class="line-segment" style="background-color: {line_color};">
+                <div class="station-node" style="border-color: {line_color};"></div>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    with col_name:
+        # 使用按鈕當作車站點擊介面
+        if st.button(sta_name, key=f"btn_{sta_code}"):
+            st.session_state.selected_sta = sta_code
+            st.session_state.selected_sta_name = sta_name
+            
+    # 如果該站被點選，顯示班次資訊
+    if st.session_state.selected_sta == sta_code:
+        with st.spinner(f"正在獲取 {sta_name} 班次..."):
+            eta_data = get_mtr_eta(sel_line_code, sta_code)
+            
+            if eta_data and eta_data.get("status") == 1:
+                data_key = f"{sel_line_code}-{sta_code}"
+                results = eta_data.get("data", {}).get(data_key, {})
+                
+                # 準備顯示班次
+                st.markdown(f'<div class="eta-box">', unsafe_allow_html=True)
+                st.write(f"**📍 {sta_name} ( {sta_code} ) 即時班次**")
+                
+                col1, col2 = st.columns(2)
+                
+                for direction in ["UP", "DOWN"]:
+                    trains = results.get(direction, [])
+                    with (col1 if direction == "UP" else col2):
+                        dir_label = "⬆️ 上行" if direction == "UP" else "⬇️ 下行"
+                        st.write(f"**{dir_label}**")
+                        if not trains:
+                            st.write("目前無班次資訊")
+                        for t in trains:
+                            # 格式化時間 (原格式 yyyy-mm-dd hh:mm:ss)
+                            t_time = t['time'].split(" ")[1][:5]
+                            dest = t['dest']
+                            # 轉換目的地代碼為中文 (可視需求進一步對應 CSV)
+                            st.write(f"⏱️ {t_time} - 往 {dest} (月台 {t['plat']})")
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.warning("暫時無法取得班次數據，請稍後再試。")
 
-render_route()
-
-st.markdown('</div>', unsafe_allow_html=True)     
+# --- 5. 自動重整 (選配) ---
+# 如果需要每分鐘自動更新，可以加入以下程式碼：
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=30000, key="datarefresh") # 每30秒重整一次
