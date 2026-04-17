@@ -12,7 +12,6 @@ st.set_page_config(page_title="港鐵即時動態地圖 Pro", layout="wide")
 # --- 隱藏重整時的「變灰」特效 ---
 st.markdown("""
     <style>
-        /* 強制覆蓋 Streamlit 運算時的透明度，讓畫面永遠保持 100% 亮度 */
         .stApp, div[data-testid="stAppViewBlockContainer"] {
             opacity: 1 !important;
         }
@@ -48,7 +47,8 @@ def get_mtr_data(line, sta):
         return None
     return None
 
-def format_html_popup(data, line, sta_name):
+# 修正：這裡多加了 sta_code 參數
+def format_html_popup(data, line, sta_code, sta_name):
     html = f"<div style='width:250px'><h4>{sta_name}</h4>"
     
     if not data:
@@ -61,7 +61,8 @@ def format_html_popup(data, line, sta_name):
     delay_status = "✅ 運作正常" if data.get("isdelay") == "N" else "⚠️ 列車延誤"
     html += f"<p><small>{delay_status}</small></p>"
 
-    schedule = data.get("data", {}).get(f"{line}-{sta}", {})
+    # 修正：使用 sta_code 來抓取對應的字典資料
+    schedule = data.get("data", {}).get(f"{line}-{sta_code}", {})
     
     for direction in ["UP", "DOWN"]:
         trains = schedule.get(direction, [])
@@ -101,8 +102,7 @@ with st.sidebar:
 
 line_data = stations_df[stations_df["Line Code"] == sel_line]
 
-# --- 4. 地圖渲染 (使用 Fragment 進行局部更新) ---
-# 若勾選自動更新，則套用 run_every=10 的參數，只更新這個區塊，不重跑整個網頁
+# --- 4. 地圖渲染 ---
 @st.fragment(run_every=10 if auto_refresh else None)
 def render_dynamic_map():
     st.info(f"正在顯示：{line_map[sel_line]} | 🕒 最後更新時間：{time.strftime('%H:%M:%S')}")
@@ -118,7 +118,9 @@ def render_dynamic_map():
             coords = get_coords(row["English Name"])
             
             api_resp = get_mtr_data(sel_line, sta_code)
-            popup_html = format_html_popup(api_resp, sel_line, sta_name)
+            
+            # 修正：把 sta_code 一併傳進去
+            popup_html = format_html_popup(api_resp, sel_line, sta_code, sta_name)
             
             folium.Marker(
                 location=coords,
@@ -127,8 +129,6 @@ def render_dynamic_map():
                 icon=folium.Icon(color="blue", icon="train", prefix="fa")
             ).add_to(m)
 
-        # returned_objects=[] 可以減少不必要的地圖互動回傳，增進效能
         st_folium(m, width=1000, height=600, returned_objects=[])
 
-# 呼叫地圖渲染函數
 render_dynamic_map()
