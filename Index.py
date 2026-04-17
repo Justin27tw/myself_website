@@ -7,9 +7,21 @@ import os
 # 設定頁面
 st.set_page_config(page_title="港鐵即時到站路線圖", layout="centered")
 
-# --- 1. 自定義 CSS：打造垂直路線圖視覺 ---
+# --- 1. 自定義 CSS：打造垂直路線圖視覺與強制白底 ---
 st.markdown("""
     <style>
+    /* 強制亮色背景主題 */
+    .stApp {
+        background-color: #FFFFFF !important;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #F4F6F9 !important;
+    }
+    html, body, p, h1, h2, h3, h4, h5, h6, span {
+        color: #333333 !important;
+    }
+    
+    /* 路線圖視覺元素 */
     .line-segment {
         width: 6px;
         height: 50px;
@@ -31,7 +43,7 @@ st.markdown("""
     div.stButton > button {
         border: none;
         background: transparent;
-        color: #31333F;
+        color: #333333 !important;
         font-size: 18px;
         font-weight: 500;
         text-align: left;
@@ -39,23 +51,38 @@ st.markdown("""
         padding: 10px 20px;
     }
     div.stButton > button:hover {
-        color: #FF4B4B;
-        background: #F0F2F6;
+        color: #FF4B4B !important;
+        background: #F0F2F6 !important;
     }
     .eta-box {
-        background-color: #f8f9fa;
+        background-color: #F8F9FA;
         border-radius: 10px;
         padding: 15px;
         border-left: 5px solid #0078d4;
         margin: 5px 0px 20px 40px;
+        color: #333333;
     }
     </style>
 """, unsafe_allow_html=True)
 
+# --- 定義各路線的強制排序字典 ---
+CUSTOM_ORDER = {
+    "KTL": ["黃埔", "何文田", "油麻地", "旺角", "太子", "石硤尾", "九龍塘", "樂富", "黃大仙", "鑽石山", "彩虹", "九龍灣", "牛頭角", "觀塘", "藍田", "油塘", "調景嶺"],
+    "TWL": ["中環", "金鐘", "尖沙咀", "佐敦", "油麻地", "旺角", "太子", "深水埗", "長沙灣", "荔枝角", "美孚", "荔景", "葵芳", "葵興", "大窩口", "荃灣"],
+    "ISL": ["堅尼地城", "香港大學", "西營盤", "上環", "中環", "金鐘", "灣仔", "銅鑼灣", "天后", "炮台山", "北角", "鰂魚涌", "太古", "西灣河", "筲箕灣", "杏花邨", "柴灣"],
+    "TKL": ["北角", "鰂魚涌", "油塘", "調景嶺", "將軍澳", "坑口", "寶琳", "康城"],
+    "TML": ["屯門", "兆康", "天水圍", "朗屏", "元朗", "錦上路", "荃灣西", "美孚", "南昌", "柯士甸", "尖東", "紅磡", "何文田", "土瓜灣", "宋皇台", "啟德", "鑽石山", "顯徑", "大圍", "車公廟", "沙田圍", "第一城", "石門", "大水坑", "恆安", "馬鞍山", "烏溪沙"],
+    "EAL": ["金鐘", "會展", "紅磡", "旺角東", "九龍塘", "大圍", "沙田", "火炭", "馬場", "大學", "大埔墟", "太和", "粉嶺", "上水", "羅湖", "落馬洲"],
+    "TCL": ["香港", "九龍", "奧運", "南昌", "荔景", "青衣", "欣澳", "東涌"],
+    "SIL": ["金鐘", "海洋公園", "黃竹坑", "利東", "海怡半島"],
+    "AEL": ["香港", "九龍", "青衣", "機場", "博覽館"],
+    "DRL": ["欣澳", "迪士尼"]
+}
+
+
 # --- 2. 數據載入與轉換表建立 ---
 @st.cache_data
 def load_mtr_data():
-    # 取得絕對路徑以避免 FileNotFoundError
     base_path = os.path.dirname(os.path.abspath(__file__))
     file_path = os.path.join(base_path, "mtr_lines_and_stations.csv")
     
@@ -64,9 +91,6 @@ def load_mtr_data():
         return pd.DataFrame(), {}
     
     df = pd.read_csv(file_path)
-    
-    # 建立「車站代碼 -> 中文名稱」的對照表 (例如: {"TIK": "調景嶺", "WHA": "黃埔"})
-    # 先過濾重複代碼，再設為字典
     mapping = df.drop_duplicates(subset=["Station Code"]).set_index("Station Code")["Chinese Name"].to_dict()
     
     return df, mapping
@@ -87,13 +111,13 @@ st.title("🚇 港鐵動態路線圖")
 if not stations_all.empty:
     line_info = {
         "KTL": {"name": "觀塘綫", "color": "#00AB4E"},
-        "ISL": {"name": "港島綫", "color": "#0077C8"},
         "TWL": {"name": "荃灣綫", "color": "#E2231A"},
-        "SIL": {"name": "南港島綫", "color": "#B5BD00"},
+        "ISL": {"name": "港島綫", "color": "#0077C8"},
         "TKL": {"name": "將軍澳綫", "color": "#A35EB5"},
-        "EAL": {"name": "東鐵綫", "color": "#53B7E8"},
         "TML": {"name": "屯馬綫", "color": "#9A3820"},
+        "EAL": {"name": "東鐵綫", "color": "#53B7E8"},
         "TCL": {"name": "東涌綫", "color": "#F3A11F"},
+        "SIL": {"name": "南港島綫", "color": "#B5BD00"},
         "AEL": {"name": "機場快綫", "color": "#007078"},
         "DRL": {"name": "迪士尼綫", "color": "#F5821F"}
     }
@@ -105,9 +129,21 @@ if not stations_all.empty:
         if st.button("🔄 刷新資訊"):
             st.rerun()
 
-    # 獲取該線路車站並排序
-    line_stations = stations_all[stations_all["Line Code"] == sel_line_code].sort_values("Sequence")
+    # 獲取該線路車站
+    line_stations = stations_all[stations_all["Line Code"] == sel_line_code].copy()
     line_stations = line_stations.drop_duplicates(subset=["Station Code"])
+    
+    # 依照 CUSTOM_ORDER 進行強制排序
+    if sel_line_code in CUSTOM_ORDER:
+        # 建立排序字典
+        sort_mapping = {name: index for index, name in enumerate(CUSTOM_ORDER[sel_line_code])}
+        # 產生一個暫時的排序欄位，若找不到則給予極大值排在最後
+        line_stations['Custom_Sort'] = line_stations['Chinese Name'].map(sort_mapping).fillna(999)
+        line_stations = line_stations.sort_values("Custom_Sort").drop(columns=["Custom_Sort"])
+    else:
+        # 如果意外有沒被包含的路線，則使用原本的 Sequence 備用
+        line_stations = line_stations.sort_values("Sequence")
+
     line_color = line_info[sel_line_code]['color']
 
     st.subheader(f"{line_info[sel_line_code]['name']} 路線圖")
