@@ -6,129 +6,129 @@ from streamlit_folium import st_folium
 import time
 from geopy.geocoders import Nominatim
 
-st.set_page_config(page_title="港鐵全綫即時動態地圖", layout="wide")
+# 設定頁面與標題
+st.set_page_config(page_title="港鐵即時動態地圖 Pro", layout="wide")
 
-# --- 1. 讀取並整理港鐵官方 CSV 資料 ---
+# --- 隱藏重整時的「變灰」特效 ---
+st.markdown("""
+    <style>
+        /* 強制覆蓋 Streamlit 運算時的透明度，讓畫面永遠保持 100% 亮度 */
+        .stApp, div[data-testid="stAppViewBlockContainer"] {
+            opacity: 1 !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- 1. 資料載入與快取 ---
 @st.cache_data
 def load_mtr_csv():
-    # 直接從開放數據 URL 讀取 CSV
     url = "https://opendata.mtr.com.hk/data/mtr_lines_and_stations.csv"
     df = pd.read_csv(url)
-    
-    # 根據 API 規格書，過濾出目前支援即時動態的路線
     supported_lines = ["AEL", "TCL", "TML", "TKL", "EAL", "SIL", "TWL", "ISL", "KTL", "DRL"]
     df = df[df["Line Code"].isin(supported_lines)]
-    
-    # 移除重複的車站 (因為 CSV 分上下行 Direction 會重複列出同一個車站)
-    stations_df = df.drop_duplicates(subset=["Line Code", "Station Code"]).copy()
-    return stations_df
+    return df.drop_duplicates(subset=["Line Code", "Station Code"])
 
-# --- 2. 自動轉換車站名稱為經緯度 (Geocoding) ---
 @st.cache_data
-def get_coordinates(station_name_en):
-    geolocator = Nominatim(user_agent="mtr_map_app")
+def get_coords(station_en):
+    geolocator = Nominatim(user_agent="mtr_app_v2")
     try:
-        # 加上 "MTR Station, Hong Kong" 提高精準度
-        query = f"{station_name_en} MTR Station, Hong Kong"
-        location = geolocator.geocode(query, timeout=5)
-        if location:
-            return location.latitude, location.longitude
+        loc = geolocator.geocode(f"{station_en} MTR Station, Hong Kong", timeout=5)
+        return (loc.latitude, loc.longitude) if loc else (22.2988, 114.1722)
     except:
-        pass
-    # 若搜尋不到，給予一個預設座標 (維多利亞港附近)
-    return 22.2988, 114.1722
+        return 22.2988, 114.1722
 
-# --- 3. 獲取 API 即時班次 ---
-def get_mtr_schedule(line, sta):
+# --- 2. API 數據獲取與解析 ---
+def get_mtr_data(line, sta):
     url = f"https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php?line={line}&sta={sta}&lang=TC"
     try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            # 在 API 資料字典中，status 為 1 代表正常
-            if data.get("status") == 1:
-                return data["data"].get(f"{line}-{sta}", {})
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            return resp.json()
     except:
-        pass
+        return None
     return None
 
-def format_schedule(schedule_data):
-    if not schedule_data:
-        return "目前無資料或發生錯誤"
+def format_html_popup(data, line, sta_name):
+    html = f"<div style='width:250px'><h4>{sta_name}</h4>"
     
-    info = ""
+    if not data:
+        return html + "<p style='color:red'>無法取得即時數據</p></div>"
+    
+    if data.get("status") == 0:
+        msg = data.get("message", "車站服務受阻")
+        return html + f"<p style='color:orange'>⚠️ {msg}</p></div>"
+    
+    delay_status = "✅ 運作正常" if data.get("isdelay") == "N" else "⚠️ 列車延誤"
+    html += f"<p><small>{delay_status}</small></p>"
+
+    schedule = data.get("data", {}).get(f"{line}-{sta}", {})
+    
     for direction in ["UP", "DOWN"]:
-        if direction in schedule_data:
-            dir_name = "上行" if direction == "UP" else "下行"
-            info += f"<b>【{dir_name}】</b><br>"
+        trains = schedule.get(direction, [])
+        if trains:
+            dir_label = "往港島/市區方向" if direction == "DOWN" else "往新界/離島方向"
+            html += f"<b>{dir_label}:</b><table style='width:100%; border-collapse: collapse; font-size:12px;'>"
+            html += "<tr><th>目的地</th><th>月台</th><th>時間</th></tr>"
             
-            for train in schedule_data[direction]:
-                dest = train.get('dest', '未知')
-                plat = train.get('plat', '未知')
-                # 擷取時間字串的最後 HH:mm:ss 部分
-                time_str = train.get('time', '').split(" ")[-1]
-                info += f"開往: {dest} | 月台: {plat} | 預計時間: {time_str}<br>"
-            info += "<br>"
-    return info if info else "目前無列車資訊"
+            for t in trains:
+                dest = t.get('dest')
+                plat = t.get('plat')
+                time_val = t.get('time', '').split(" ")[1][:5]
+                route_info = " (經馬場)" if t.get('route') == "RAC" else ""
+                type_info = " (抵達)" if t.get('timetype') == "A" else ""
+                html += f"<tr><td>{dest}{route_info}</td><td align='center'>{plat}</td><td>{time_val}{type_info}</td></tr>"
+            html += "</table><br>"
+            
+    if "UP" not in schedule and "DOWN" not in schedule:
+        html += "<p>目前沒有即時班次資訊</p>"
+        
+    return html + "</div>"
 
-# --- UI 介面設計 ---
-st.title("🚇 港鐵全綫即時動態地圖")
-
-# 讀取 CSV 站點資料
+# --- 3. UI 佈局 ---
+st.title("🚇 港鐵即時到站系統")
 stations_df = load_mtr_csv()
 
-# 路線中英文對照表 (用於側邊欄顯示)
-line_dict = {
+line_map = {
     "AEL": "機場快綫", "TCL": "東涌綫", "TML": "屯馬綫", "TKL": "將軍澳綫",
     "EAL": "東鐵綫", "SIL": "南港島綫", "TWL": "荃灣綫", "ISL": "港島綫",
     "KTL": "觀塘綫", "DRL": "迪士尼綫"
 }
 
-# 建立側邊欄讓使用者選擇路線
-st.sidebar.header("🗺️ 地圖設定")
-selected_line = st.sidebar.selectbox(
-    "請選擇要查看的港鐵路線：", 
-    stations_df["Line Code"].unique(),
-    format_func=lambda x: f"{x} - {line_dict.get(x, x)}"
-)
+with st.sidebar:
+    st.header("⚙️ 設定")
+    sel_line = st.selectbox("選擇路線", list(line_map.keys()), format_func=lambda x: f"{x} {line_map[x]}")
+    auto_refresh = st.checkbox("啟動自動更新 (每 10 秒)", value=True)
 
-# 過濾出所選路線的所有車站
-line_stations = stations_df[stations_df["Line Code"] == selected_line]
+line_data = stations_df[stations_df["Line Code"] == sel_line]
 
-st.write(f"最後更新時間: **{time.strftime('%Y-%m-%d %H:%M:%S')}** (每 10 秒自動更新本頁面)")
+# --- 4. 地圖渲染 (使用 Fragment 進行局部更新) ---
+# 若勾選自動更新，則套用 run_every=10 的參數，只更新這個區塊，不重跑整個網頁
+@st.fragment(run_every=10 if auto_refresh else None)
+def render_dynamic_map():
+    st.info(f"正在顯示：{line_map[sel_line]} | 🕒 最後更新時間：{time.strftime('%H:%M:%S')}")
+    
+    if not line_data.empty:
+        mid_idx = len(line_data) // 2
+        center = get_coords(line_data.iloc[mid_idx]["English Name"])
+        m = folium.Map(location=center, zoom_start=12)
 
-# --- 建立地圖 ---
-if not line_stations.empty:
-    # 依照該路線的第一個車站作為地圖的初始中心點
-    first_sta_en = line_stations.iloc[0]["English Name"]
-    center_lat, center_lon = get_coordinates(first_sta_en)
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+        for _, row in line_data.iterrows():
+            sta_code = row["Station Code"]
+            sta_name = row["Chinese Name"]
+            coords = get_coords(row["English Name"])
+            
+            api_resp = get_mtr_data(sel_line, sta_code)
+            popup_html = format_html_popup(api_resp, sel_line, sta_name)
+            
+            folium.Marker(
+                location=coords,
+                popup=folium.Popup(popup_html, max_width=300),
+                tooltip=sta_name,
+                icon=folium.Icon(color="blue", icon="train", prefix="fa")
+            ).add_to(m)
 
-    # 將該路線的每個車站加入地圖
-    for index, row in line_stations.iterrows():
-        sta_code = row["Station Code"]
-        sta_name_zh = row["Chinese Name"]
-        sta_name_en = row["English Name"]
-        
-        # 1. 取得座標
-        lat, lon = get_coordinates(sta_name_en)
-        # 2. 取得該站即時班次
-        schedule = get_mtr_schedule(selected_line, sta_code)
-        
-        # 3. 組合地圖彈出視窗 (Popup) 內容
-        popup_content = f"<h4>{sta_name_zh} ({sta_code})</h4>"
-        popup_content += format_schedule(schedule)
-        
-        folium.Marker(
-            location=[lat, lon],
-            popup=folium.Popup(popup_content, max_width=300),
-            tooltip=f"點擊查看 {sta_name_zh} 班次",
-            icon=folium.Icon(color="blue", icon="train", prefix='fa')
-        ).add_to(m)
+        # returned_objects=[] 可以減少不必要的地圖互動回傳，增進效能
+        st_folium(m, width=1000, height=600, returned_objects=[])
 
-    # 顯示地圖
-    st_folium(m, width=900, height=500)
-
-# 讓 Streamlit 每 10 秒自動重新執行此腳本 (模擬動態更新)
-time.sleep(10)
-st.rerun()
+# 呼叫地圖渲染函數
+render_dynamic_map()
